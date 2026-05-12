@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    color: #283947;
+    background:
+      radial-gradient(900px 500px at 85% -10%, rgba(0, 151, 216, 0.10), transparent 60%),
+      radial-gradient(800px 500px at -10% 110%, rgba(58, 179, 215, 0.08), transparent 60%),
+      #ffffff;
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: rgba(0, 151, 216, 0.25);
+    color: #283947;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-bg-card border border-slate-200 rounded-2xl shadow-card;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium;
+  }
+
+  .btn-ghost {
+    @apply text-ink-mute hover:text-ink transition;
+  }
+}

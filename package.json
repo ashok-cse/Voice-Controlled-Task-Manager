@@ -1,0 +1,39 @@
+{
+  "name": "voice-controlled-task-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c cyan,magenta \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "tsx watch backend/server.ts",
+    "dev:frontend": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "tsx backend/server.ts",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "db:init": "node ./scripts/init-db.mjs"
+  },
+  "dependencies": {
+    "chrono-node": "^2.7.7",
+    "dotenv": "^17.4.2",
+    "groq-sdk": "^1.2.0",
+    "pg": "^8.13.1",
+    "tsx": "^4.21.0",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-auto": "^3.3.1",
+    "@sveltejs/adapter-node": "^5.5.4",
+    "@sveltejs/kit": "^2.8.1",
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@types/pg": "^8.11.10",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
+    "postcss": "^8.4.49",
+    "svelte": "^5.1.16",
+    "svelte-check": "^4.0.8",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
