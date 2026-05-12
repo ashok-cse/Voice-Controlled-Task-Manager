@@ -15,6 +15,7 @@
   let messages = $state<ConversationMessage[]>([]);
   let liveUser = $state('');
   let liveAssistant = $state('');
+  let lastReplyText = $state('');
   let errorMsg = $state('');
   let highlightIds = $state<string[]>([]);
   let pendingMessage = $state<string | null>(null);
@@ -28,6 +29,9 @@
   let showConversation = $state(false);
 
   onMount(async () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      showConversation = true;
+    }
     user = await currentUser();
     authChecked = true;
     if (user) await refresh();
@@ -46,6 +50,7 @@
     user = null;
     tasks = [];
     messages = [];
+    lastReplyText = '';
   }
 
   async function refresh() {
@@ -94,6 +99,7 @@
     while (handsFree) {
       voiceState = 'listening';
       liveUser = '';
+      liveAssistant = '';
       const noSpeechMs = awaitingConfirmation ? 6000 : 9000;
       let result;
       try {
@@ -125,6 +131,7 @@
         liveUser = transcript || '…';
         if (!transcript) {
           const fallback = "Sorry, I didn't catch that.";
+          lastReplyText = fallback;
           liveAssistant = fallback;
           voiceState = 'speaking';
           await speakWithBargeIn(recorder, fallback);
@@ -140,6 +147,7 @@
         highlightIds = data.affectedTaskIds ?? [];
         pendingMessage = data.pendingConfirmation?.message ?? null;
         awaitingConfirmation = !!data.pendingConfirmation;
+        lastReplyText = data.responseText;
         liveAssistant = data.responseText;
 
         voiceState = 'speaking';
@@ -155,6 +163,7 @@
         console.error(err);
         const fallback = 'Connection was interrupted. Please try again.';
         errorMsg = fallback;
+        lastReplyText = fallback;
         liveAssistant = fallback;
         voiceState = 'speaking';
         try {
@@ -308,6 +317,14 @@
 
         <div class="glass flex shrink-0 flex-col items-center px-6 py-7 sm:p-8">
           <VoiceOrb state={voiceState} {handsFree} onToggle={toggleMic} />
+          {#if lastReplyText}
+            <p
+              class="mt-5 max-w-lg px-2 text-center text-sm leading-relaxed text-ink"
+              role="status"
+            >
+              {lastReplyText}
+            </p>
+          {/if}
           {#if pendingMessage}
             <div class="mt-6 max-w-lg text-center text-sm text-accent-warm">
               {pendingMessage}<br />

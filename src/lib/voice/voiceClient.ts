@@ -18,6 +18,14 @@ export interface ListenOptions {
   onSpeechStart?: () => void;
 }
 
+function isIOSLike(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  const iOS = /iPad|iPhone|iPod/i.test(ua);
+  const iPadOS = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  return iOS || iPadOS;
+}
+
 export class VoiceRecorder {
   private stream: MediaStream | null = null;
   private audioCtx: AudioContext | null = null;
@@ -42,6 +50,11 @@ export class VoiceRecorder {
     const Ctx =
       window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     this.audioCtx = new Ctx();
+    try {
+      await this.audioCtx.resume();
+    } catch {
+      /* ignore */
+    }
     const src = this.audioCtx.createMediaStreamSource(this.stream);
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = 1024;
@@ -147,7 +160,8 @@ export class VoiceRecorder {
     this.mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) this.chunks.push(e.data);
     };
-    this.mediaRecorder.start();
+    // timeslice helps some WebKit builds flush recorded data reliably
+    this.mediaRecorder.start(250);
 
     const startedAt = performance.now();
     let speechStartedAt: number | null = null;
@@ -218,12 +232,21 @@ export class VoiceRecorder {
 }
 
 function pickMime(): string | null {
-  const candidates = [
+  const webkitFirst = [
+    'audio/mp4;codecs=mp4a.40.2',
+    'audio/mp4',
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus'
+  ];
+  const defaultOrder = [
     'audio/webm;codecs=opus',
     'audio/webm',
     'audio/ogg;codecs=opus',
+    'audio/mp4;codecs=mp4a.40.2',
     'audio/mp4'
   ];
+  const candidates = isIOSLike() ? webkitFirst : defaultOrder;
   for (const c of candidates) {
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) return c;
   }
@@ -276,6 +299,33 @@ function abortSignalPromise(signal: AbortSignal | undefined): Promise<void> | nu
   });
 }
 
+/** iOS WebKit often leaves synthesis “paused” until resume() after a tap. */
+async function speakWithBrowserSynth(text: string, signal?: AbortSignal): Promise<void> {
+  if (!text.trim() || signal?.aborted) return;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+  const syn = window.speechSynthesis;
+  syn.cancel();
+  if (isIOSLike()) {
+    try {
+      syn.resume();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const synDone = new Promise<void>((resolve) => {
+    const u = new SpeechSynthesisUtterance(text);
+    const done = () => resolve();
+    u.onend = done;
+    u.onerror = done;
+    syn.speak(u);
+  });
+  const abortWait = abortSignalPromise(signal);
+  if (abortWait !== null) await Promise.race([abortWait, synDone]);
+  else await synDone;
+}
+
 export async function speak(text: string, signal?: AbortSignal): Promise<void> {
   if (!text.trim()) return;
   if (signal?.aborted) return;
@@ -298,37 +348,43 @@ export async function speak(text: string, signal?: AbortSignal): Promise<void> {
     const blob = base64ToBlob(result.audio, result.mime);
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
+    audio.setAttribute('playsinline', 'true');
+    audio.preload = 'auto';
     currentAudio = audio;
 
-    const playDone = new Promise<void>((resolve) => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
+    };
+
+    const waitEnd = new Promise<void>((resolve) => {
       audio.onended = () => {
-        URL.revokeObjectURL(url);
-        if (currentAudio === audio) currentAudio = null;
+        cleanup();
         resolve();
       };
       audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        if (currentAudio === audio) currentAudio = null;
+        cleanup();
         resolve();
       };
-      audio.play().catch(() => resolve());
     });
-    if (abortWait !== null) await Promise.race([abortWait, playDone]);
-    else await playDone;
+
+    try {
+      await audio.play();
+    } catch {
+      cleanup();
+      await speakWithBrowserSynth(text, signal);
+      return;
+    }
+
+    if (abortWait !== null) await Promise.race([abortWait, waitEnd]);
+    else await waitEnd;
   } catch (err) {
     if (signal?.aborted) return;
     console.warn('[tts] falling back to browser speech:', err);
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      const synDone = new Promise<void>((resolve) => {
-        const u = new SpeechSynthesisUtterance(text);
-        const done = () => resolve();
-        u.onend = done;
-        u.onerror = done;
-        window.speechSynthesis.speak(u);
-      });
-      if (abortWait !== null) await Promise.race([abortWait, synDone]);
-      else await synDone;
-    }
+    await speakWithBrowserSynth(text, signal);
   }
 }
 
