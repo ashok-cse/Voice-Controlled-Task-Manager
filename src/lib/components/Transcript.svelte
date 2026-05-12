@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { ConversationMessage } from '$lib/types';
 
   interface Props {
@@ -8,9 +9,24 @@
   }
 
   let { messages, liveUser = '', liveAssistant = '' }: Props = $props();
+  let scrollEl = $state<HTMLElement | undefined>();
+
+  $effect(() => {
+    void messages.length;
+    void liveUser;
+    void liveAssistant;
+    queueMicrotask(async () => {
+      await tick();
+      scrollEl?.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' });
+    });
+  });
 </script>
 
-<div class="glass p-4 max-h-[460px] overflow-y-auto space-y-3" id="transcript-scroll">
+<div
+  bind:this={scrollEl}
+  class="glass p-3 sm:p-4 min-h-[120px] max-h-[min(38vh,320px)] lg:max-h-[min(52vh,520px)] overflow-y-auto space-y-2.5 sm:space-y-3"
+  id="transcript-scroll"
+>
   {#if messages.length === 0 && !liveUser && !liveAssistant}
     <div class="text-ink-mute text-sm text-center py-6">
       Conversation will appear here as you speak.

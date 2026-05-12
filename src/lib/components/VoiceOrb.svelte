@@ -27,7 +27,7 @@
 <div class="flex flex-col items-center gap-4">
   <button
     type="button"
-    class="relative h-40 w-40 rounded-full focus:outline-none focus:ring-4 focus:ring-accent/40"
+    class="relative h-[8.5rem] w-[8.5rem] sm:h-40 sm:w-40 rounded-full focus:outline-none focus:ring-4 focus:ring-accent/40"
     onclick={onToggle}
     aria-label="Toggle microphone"
   >
@@ -52,18 +52,18 @@
           {/each}
         </div>
       {:else if state === 'processing'}
-        <svg class="h-10 w-10 animate-spin text-white" viewBox="0 0 24 24" fill="none">
+        <svg class="h-9 w-9 sm:h-10 sm:w-10 animate-spin text-white" viewBox="0 0 24 24" fill="none">
           <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-opacity="0.25" stroke-width="3" />
           <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
         </svg>
       {:else if state === 'speaking'}
-        <svg class="h-10 w-10 text-white" viewBox="0 0 24 24" fill="currentColor">
+        <svg class="h-9 w-9 sm:h-10 sm:w-10 text-white" viewBox="0 0 24 24" fill="currentColor">
           <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
           <path d="M16 8a5 5 0 0 1 0 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none" />
           <path d="M19 5a9 9 0 0 1 0 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none" />
         </svg>
       {:else}
-        <svg class="h-12 w-12 text-white" viewBox="0 0 24 24" fill="currentColor">
+        <svg class="h-11 w-11 sm:h-12 sm:w-12 text-white" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z" />
           <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 1 0 2 0v-3.08A7 7 0 0 0 19 11z" />
         </svg>
