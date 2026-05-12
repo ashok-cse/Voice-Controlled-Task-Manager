@@ -1,62 +1,73 @@
 # Voice-Controlled Task Manager
 
-A voice-first task manager that lets you create, read, update, and delete tasks entirely through natural speech. No edit buttons. No delete buttons. Just talk.
-
-Built with **SvelteKit + TypeScript**, powered by **Groq** for LLM intent parsing, Whisper STT, and PlayAI TTS, and backed by **PostgreSQL**.
+A voice-first task manager: create, read, update, complete, and delete tasks through natural speech—plus recurring stretches over days/weeks when asked. Built with **SvelteKit + TypeScript**, **Groq** (LLM + Whisper STT + TTS), **PostgreSQL**, and a **WebSocket** backend.
 
 ---
 
 ## Features
 
-- Voice-based task creation (single & multiple in one command)
-- Voice-based agenda reading with natural time phrases (today, tomorrow, this evening, etc.)
-- Voice-based task update with context references (“change the previous one”, “move the second one”)
-- Voice-based deletion with mandatory confirmation
-- Conversation context memory (last listed, created, updated tasks + pending confirmations)
-- Semantic task matching (e.g. “workout” ≈ “gym”)
-- Interruption handling — speak over the assistant to redirect
-- Graceful failure handling for STT/TTS/LLM/network errors
+- Voice pipeline: browser **MediaRecorder** → Groq **Whisper** → transcript → Groq **LLM** (structured JSON intent) → task engine → Groq **TTS** → playback (with **barge-in**).
+- Full task lifecycle by voice: **create** (single or multi-task utterances), **read** with filters (today / tomorrow / week / time-of-day), **update**, **complete**, **delete** (always **confirmation** first).
+- **Session auth**: email/password **signup/login**, opaque session tokens over the same WebSocket; tasks are scoped **per user**.
+- **Conversation memory**: last listed / created / updated task IDs, pending confirmations, multi-turn slot filling for incomplete creates.
+- **Natural times**: **chrono-node** + custom phrases + **Luxon**; the browser sends **`Intl` timezone** so spoken times match the UI (no server-vs-local clock drift).
+- **Semantic-ish matching**: fuzzy title match (`pg_trgm`), ordinals (“the second one”), context (“previous”, “that”).
+- **Recurring tasks**: `CREATE_TASK` / `REPEAT_TASK` with `repeat.count` × `day` or `week` (materialized rows).
+
+---
+
+## Submission checklist (typical brief ↔ this repo)
+
+_Use this section against your course PDF; rename bullets if your rubric uses different wording._
+
+| Requirement area | How it is met |
+| ---------------- | ------------- |
+| Voice input / STT | Audio sent over **`ws`** message type **`stt`** → Groq Whisper (`backend/wsHandlers.ts`, `src/lib/voice/voiceClient.ts`). |
+| NLP / intent | Groq chat completions **JSON mode** → validated action (`backend/agent/parseIntent.ts`, `agentPrompt.ts`). |
+| Voice output / TTS | **`tts`** WebSocket message → Groq speech API → WAV playback in browser. |
+| Persistence | **PostgreSQL**: users, sessions, tasks, conversation messages, conversation state (`schema.sql`, `backend/tasks/taskStore.ts`, `backend/db.ts`). |
+| CRUD & queries | Task engine executes intents (`backend/tasks/taskEngine.ts`): create/read/update/complete/delete + filters + repeat. |
+| Time & schedules | Parsedwall-clock expressions resolved in the **client’s IANA timezone** (`backend/tasks/timeParser.ts`, `backend/userTime.ts`, payload `timeZone` from `src/routes/+page.svelte`). |
+| Architecture | **Single binary** in production: SvelteKit **adapter-node** handler + **`ws`** on one HTTP server (`backend/server.ts`). |
+| Deployability | **`Dockerfile`**, env-driven config, documented ports and **`DATABASE_SSL`**. |
+| Auth / multi-user | Signup/login/logout/`auth:me` over WebSocket (`backend/auth.ts`, `AuthGate.svelte`). Legacy **`default-user`** UUID remains seeded for older data (`schema.sql`). |
 
 ---
 
 ## Architecture
 
 ```
-User voice
-  ↓
-MediaRecorder (browser)
-  ↓
-/api/stt  →  Groq Whisper           → transcript
-  ↓
-/api/agent/command
-  ↓
-Groq LLM (llama-3.3-70b)  → structured JSON action
-  ↓
-Task Engine (validate + matcher + time parser)
-  ↓
-PostgreSQL (tasks, conversation, context state)
-  ↓
-responseText
-  ↓
-/api/tts  →  Groq PlayAI TTS        → audio
-  ↓
-Audio playback in browser
+Browser (SvelteKit)
+  MediaRecorder → audio blob
+       ↓
+  WebSocket /ws  →  message type "stt"  →  Groq Whisper  →  transcript
+       ↓
+  WebSocket /ws  →  "agent:command" { transcript, timeZone }
+       ↓
+  Groq LLM (JSON action)  →  executeAction + Postgres
+       ↓
+  responseText + tasks
+       ↓
+  WebSocket /ws  →  "tts"  →  Groq TTS  →  WAV → speakers
 ```
 
-The LLM **never** mutates storage directly. It only returns a structured JSON action which the task engine validates and executes.
+The **LLM never writes to the database directly**. It returns a structured **`AgentAction`**; the task engine validates, confirms deletes, and executes SQL.
+
+**Development**: Vite dev server (default **5173**) proxies **`/ws`** to the Node backend (**`BACKEND_PORT`**, default **8787**). **Production**: `npm run build` then `npm run start` serves HTTP + **`/ws`** on **`PORT`** (default **3000**).
 
 ---
 
-## Tech Stack
+## Tech stack
 
-| Layer        | Choice                                      |
-| ------------ | ------------------------------------------- |
-| Frontend     | SvelteKit 2 + TypeScript + Tailwind CSS     |
-| LLM          | Groq · `llama-3.3-70b-versatile`            |
-| STT          | Groq · `whisper-large-v3-turbo`             |
-| TTS          | Groq · `playai-tts` (voice: `Fritz-PlayAI`) |
-| Database     | PostgreSQL (any provider)                   |
-| Time parsing | `chrono-node` + custom time-of-day handler  |
+| Layer | Choice |
+| ----- | ------ |
+| Frontend | SvelteKit 2 · Svelte 5 · TypeScript · Tailwind CSS |
+| Transport | **`ws`** WebSocket (`/ws`), not REST `/api/*` routes |
+| LLM | Groq · env **`GROQ_LLM_MODEL`** (default `llama-3.3-70b-versatile`) |
+| STT | Groq · **`GROQ_STT_MODEL`** (default `whisper-large-v3-turbo`) |
+| TTS | Groq · **`GROQ_TTS_MODEL`** / **`GROQ_TTS_VOICE`** (defaults: Orpheus English · `hannah`) |
+| Database | PostgreSQL · **`pg`** |
+| Dates | **`chrono-node`** · **`luxon`** · client **`Intl`** timezone |
 
 ---
 
@@ -68,159 +79,124 @@ The LLM **never** mutates storage directly. It only returns a structured JSON ac
 npm install
 ```
 
-### 2. Configure environment
-
-Copy `.env.example` to `.env` and fill in:
+### 2. Environment
 
 ```bash
 cp .env.example .env
 ```
 
-- `GROQ_API_KEY` — from <https://console.groq.com>
-- `DATABASE_URL` — your Postgres connection string (e.g. from the PocketBase / Postgres instance you’ll provide)
-- `DATABASE_SSL=true` if your provider requires SSL
+Set **`GROQ_API_KEY`** (from [Groq Console](https://console.groq.com)), **`DATABASE_URL`**, and **`DATABASE_SSL=true`** if your host requires TLS.
 
-### 3. Initialize the database
-
-Apply the schema:
+### 3. Database schema
 
 ```bash
 npm run db:init
 ```
 
-Or run `schema.sql` manually:
+Or: `psql "$DATABASE_URL" -f schema.sql`
 
-```bash
-psql "$DATABASE_URL" -f schema.sql
-```
-
-### 4. Run
+### 4. Run (dev)
 
 ```bash
 npm run dev
 ```
 
-Open <http://localhost:5173> in **Chrome desktop** (best browser support for `MediaRecorder` + microphone).
+Open **http://localhost:5173** in **Chrome** (recommended for MediaRecorder + microphone).
 
 ---
 
 ## Docker
 
-In production the SvelteKit frontend and the WebSocket backend run inside a **single Node process on a single port**, so the image is deployable as-is on EasyPanel, Fly.io, Render, Railway, or any Docker host.
+The image listens on **`PORT`** (default **3000**) for HTTP and **`/ws`** on the same port—fine behind Railway, Fly.io, Render, EasyPanel, etc., as long as WebSocket upgrades are allowed.
 
-### Build
+Build and run (schema must already exist on Postgres):
 
 ```bash
 docker build -t voicetask .
+docker run --rm -p 3000:3000 --env-file .env voicetask
 ```
 
-### Run locally
-
-You need a reachable Postgres and a Groq API key. The fastest way is to point at a managed Postgres (Neon, Supabase, Railway, etc.) and run:
+Example inline env:
 
 ```bash
 docker run --rm -p 3000:3000 \
-  -e GROQ_API_KEY=sk_your_key \
+  -e GROQ_API_KEY=your_groq_api_key \
   -e DATABASE_URL='postgres://user:pass@host:5432/dbname' \
   -e DATABASE_SSL=true \
   voicetask
 ```
 
-Or pass your local `.env` file:
-
-```bash
-docker run --rm -p 3000:3000 --env-file .env voicetask
-```
-
-Then open <http://localhost:3000> in Chrome.
-
-> **First run only**: apply the schema once against your Postgres before starting the container:
->
-> ```bash
-> DATABASE_URL='postgres://...' npm run db:init
-> # or
-> psql "$DATABASE_URL" -f schema.sql
-> ```
+Then open **http://localhost:3000**.
 
 ### Environment variables
 
-| Variable           | Required | Default                       | Notes                                              |
-| ------------------ | -------- | ----------------------------- | -------------------------------------------------- |
-| `GROQ_API_KEY`     | yes      | —                             | From <https://console.groq.com>                    |
-| `DATABASE_URL`     | yes      | —                             | Postgres connection string                         |
-| `DATABASE_SSL`     | no       | `false`                       | Set `true` for managed providers (Neon, Supabase…) |
-| `PORT`             | no       | `3000`                        | HTTP + WebSocket port the container listens on     |
-| `GROQ_LLM_MODEL`   | no       | `llama-3.3-70b-versatile`     |                                                    |
-| `GROQ_STT_MODEL`   | no       | `whisper-large-v3-turbo`      |                                                    |
-| `GROQ_TTS_MODEL`   | no       | `canopylabs/orpheus-v1-english` |                                                  |
-| `GROQ_TTS_VOICE`   | no       | `hannah`                      |                                                    |
-
-### Deploy on EasyPanel
-
-1. Push this repo to GitHub (the `Dockerfile` at the root is all EasyPanel needs).
-2. In EasyPanel, create a new **App** → **Source: GitHub** → select this repo → **Build type: Dockerfile**.
-3. Under **Environment**, set the variables above (at minimum `GROQ_API_KEY`, `DATABASE_URL`, and `DATABASE_SSL=true` if your Postgres requires it).
-4. Under **Ports**, expose container port **3000** (HTTP). EasyPanel's reverse proxy forwards both HTTP and WebSocket upgrade requests, so `/ws` works out of the box — **no extra port is required**.
-5. (One-time) From any machine with `psql` or `node` installed, run `npm run db:init` against the same `DATABASE_URL` to create the schema.
-6. Deploy. Open the assigned domain in Chrome.
+| Variable | Required | Default | Notes |
+| -------- | -------- | ------- | ----- |
+| **`GROQ_API_KEY`** | yes | — | Groq Cloud API key |
+| **`DATABASE_URL`** | yes | — | Postgres URL |
+| **`DATABASE_SSL`** | no | `false` | `true` for Neon, Supabase, Railway, etc. |
+| **`PORT`** | no | `3000` | HTTP + **`/ws`** |
+| **`GROQ_LLM_MODEL`** | no | `llama-3.3-70b-versatile` | |
+| **`GROQ_STT_MODEL`** | no | `whisper-large-v3-turbo` | |
+| **`GROQ_TTS_MODEL`** | no | `canopylabs/orpheus-v1-english` | |
+| **`GROQ_TTS_VOICE`** | no | `hannah` | |
 
 ---
 
-## Demo Script
+## Demo script
 
-1. **Create**: “Create a task for syncing with the product manager at 10 AM.”
-2. **Create**: “Create a task for posting on LinkedIn at 5 PM.”
-3. **Update**: “Change the LinkedIn task to 6 PM.”
-4. **Context update**: “Actually change the previous one to 7 PM.”
-5. **Read agenda**: “What are my evening tasks?”
-6. **Ordinal context**: “Move the first one to tomorrow.”
-7. **Delete with confirmation**: “Delete the LinkedIn task.” → “Yes.”
-8. **Multiple creation**: “Create three tasks for tomorrow morning. Gym at 7 AM, team sync at 9 AM, and post on LinkedIn at 11 AM.”
+1. Sign up / log in via the gate.
+2. **Create**: “Create a task for syncing with the product manager at 10 AM.”
+3. **Multi-create**: “Create three tasks for tomorrow morning. Gym at 7, team sync at 9, LinkedIn post at 11.”
+4. **Read**: “How many pending tasks do I have?” / “What’s on my list tomorrow?”
+5. **Update**: “Change the LinkedIn task to 6 PM.” → “Actually change the previous one to 7 PM.”
+6. **Complete**: “Mark the gym task done.”
+7. **Delete**: “Delete the LinkedIn task.” → confirm **Yes**.
+8. **Repeat**: “Repeat the gym task every day for a week.”
 
 ---
 
-## Project Layout
+## Project layout
 
 ```
+backend/
+  server.ts           # HTTP + WebSocket server (imports built SvelteKit handler when present)
+  wsHandlers.ts       # auth:*, tasks:list, agent:command, stt, tts
+  auth.ts             # signup / login / sessions
+  db.ts               # Postgres pool
+  groq.ts             # Groq client + model env vars
+  userTime.ts         # client timezone normalization + speech formatting
+  agent/              # LLM prompt + parseIntent
+  tasks/              # taskEngine, taskStore, taskMatcher, timeParser
+schema.sql
+scripts/init-db.mjs
 src/
-  lib/
-    server/
-      agent/           # LLM prompt + JSON intent parser
-      tasks/           # task store (Postgres), engine, matcher, time parser
-      db.ts            # pg pool
-      groq.ts          # Groq client + model config
-    components/        # Svelte UI components (orb, list, transcript)
-    voice/             # MediaRecorder + TTS client
-    types.ts
   routes/
-    +page.svelte       # main UI
-    api/
-      agent/command/   # POST: transcript → action → response
-      stt/             # POST: audio blob → transcript
-      tts/             # POST: text → WAV audio
-      tasks/           # GET: list tasks + recent messages
-schema.sql             # Postgres schema
-scripts/init-db.mjs    # one-shot schema applier
+    +page.svelte      # main app (hands-free loop, sends timeZone with commands)
+    +layout.svelte
+  lib/
+    auth.ts
+    types.ts
+    components/       # AuthGate, VoiceOrb, TaskList, Transcript
+    voice/            # wsClient.ts, voiceClient.ts (STT/TTS/recorder)
+Dockerfile
 ```
 
 ---
 
-## Known Limitations
+## Known limitations
 
-- Best tested on Chrome desktop (MediaRecorder support varies on Safari/Firefox).
-- Browser-based MediaRecorder produces WebM/Opus; Groq Whisper accepts this directly.
-- Reminders are stored as scheduled times — background push notifications are not implemented.
-- LLM output is JSON-mode constrained and validated, but rare edge cases may require clarification.
-- Single-user MVP (a default user UUID is seeded in `users`).
+- **Browser**: Chrome desktop is the main tested target; Safari/Firefox microphone codecs may differ.
+- **Notifications**: Scheduled times are stored; **no push reminders** or OS alarms.
+- **LLM**: JSON-mode parsing can still occasionally need clarification (**UNKNOWN** path).
+- **Timezone**: Stored instants are UTC; wording and filters assume the browser-reported **`Intl`** zone per session.
 
 ---
 
-## Future Improvements
+## Future improvements
 
-- User authentication & multi-tenant isolation
-- Push notifications for upcoming reminders
-- Recurring tasks
-- Calendar sync
-- Embedding-based semantic task matching
-- Multi-language voice
-# Voice-Controlled-Task-Manager
+- Push / email reminders near **`scheduled_at`**
+- True RRULE-style recurrence (beyond materialized day/week strips)
+- Calendar export (ICS) or external calendar sync
+- Stronger embedding-based semantic match across titles
+- Multi-language STT/TTS and prompts

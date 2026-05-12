@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import type { ConversationContext, Task, TaskTarget } from '../types';
 import { parseNaturalTime } from './timeParser';
 
@@ -35,7 +36,8 @@ export function matchTasks(
   target: TaskTarget | undefined,
   allTasks: Task[],
   context: ConversationContext,
-  now: Date = new Date()
+  now: Date = new Date(),
+  timeZone = 'UTC'
 ): MatchResult {
   if (!target) return { matches: [], ambiguous: false, reason: 'none' };
 
@@ -127,7 +129,7 @@ export function matchTasks(
 
   // 4. Time expression filter.
   if (target.timeExpression && candidates.length !== 1) {
-    const when = parseNaturalTime(target.timeExpression, now);
+    const when = parseNaturalTime(target.timeExpression, now, timeZone);
     if (when) {
       const tolMs = 30 * 60 * 1000;
       const pool = candidates.length ? candidates : allTasks;
@@ -161,28 +163,22 @@ export function matchTasks(
   };
 }
 
-export function describeTaskForVoice(t: Task, now: Date = new Date()): string {
+export function describeTaskForVoice(t: Task, now: Date, timeZone = 'UTC'): string {
   if (!t.scheduledAt) return t.title;
-  const d = new Date(t.scheduledAt);
-  const time = d.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: d.getMinutes() ? '2-digit' : undefined,
-    hour12: true
-  });
-  const startOfDay = (x: Date) => {
-    const c = new Date(x);
-    c.setHours(0, 0, 0, 0);
-    return c.getTime();
-  };
-  const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
+  const task = DateTime.fromISO(t.scheduledAt, { zone: 'utc' }).setZone(timeZone);
+  const ref = DateTime.fromJSDate(now).setZone(timeZone);
+  const time = task.toFormat(task.minute !== 0 ? 'h:mm a' : 'h a');
+  const taskDay = task.startOf('day');
+  const refDay = ref.startOf('day');
+  const dayDiff = Math.round(taskDay.diff(refDay, 'days').days);
   let dayLabel = '';
   if (dayDiff === 0) dayLabel = '';
   else if (dayDiff === 1) dayLabel = 'tomorrow ';
   else if (dayDiff === -1) dayLabel = 'yesterday ';
   else if (dayDiff > 1 && dayDiff < 7) {
-    dayLabel = `${d.toLocaleDateString('en-US', { weekday: 'long' })} `;
+    dayLabel = `${task.toFormat('cccc')} `;
   } else {
-    dayLabel = `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} `;
+    dayLabel = `${task.toFormat('MMM d')} `;
   }
   return `${t.title} ${dayLabel}at ${time}`.replace(/\s+/g, ' ');
 }

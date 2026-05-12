@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import { groq, MODELS } from '../groq';
 import { AGENT_SYSTEM_PROMPT } from './agentPrompt';
 import type { AgentAction, ConversationContext } from '../types';
@@ -58,15 +59,22 @@ function safeJsonParse(raw: string): AgentAction | null {
 export async function parseIntent(
   transcript: string,
   context: ConversationContext,
-  nowIso: string
+  nowIso: string,
+  timeZone = 'UTC'
 ): Promise<AgentAction> {
   const history = (context.recentMessages ?? []).slice(-8).map((m) => ({
     role: m.role,
     content: m.text
   }));
 
+  const localWall = DateTime.fromISO(nowIso, { zone: 'utc' }).setZone(timeZone);
+  const localStr = localWall.isValid
+    ? localWall.toFormat('cccc, MMM d yyyy, h:mm a')
+    : nowIso;
+
   const userPrompt = [
-    `Current time (ISO): ${nowIso}`,
+    `Current time (ISO UTC): ${nowIso}`,
+    `Local wall clock (${timeZone}): ${localStr}`,
     buildContextHint(context),
     `User said: "${transcript}"`
   ].join('\n\n');

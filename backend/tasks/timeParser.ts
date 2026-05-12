@@ -1,4 +1,6 @@
 import * as chrono from 'chrono-node';
+import type { ParsingReference } from 'chrono-node';
+import { DateTime } from 'luxon';
 
 const TIME_OF_DAY_DEFAULTS: Record<string, { h: number; m: number }> = {
   morning: { h: 9, m: 0 },
@@ -7,49 +9,51 @@ const TIME_OF_DAY_DEFAULTS: Record<string, { h: number; m: number }> = {
   night: { h: 21, m: 0 }
 };
 
-export function parseNaturalTime(expression: string | null | undefined, now: Date = new Date()): Date | null {
+function chronoRef(instant: Date, timeZone: string): ParsingReference {
+  return { instant, timezone: timeZone };
+}
+
+export function parseNaturalTime(
+  expression: string | null | undefined,
+  refInstant: Date,
+  timeZone: string
+): Date | null {
   if (!expression) return null;
-  const text = expression.trim().toLowerCase();
+  const trimmed = expression.trim();
+  const text = trimmed.toLowerCase();
   if (!text) return null;
 
-  // Pure time-of-day expressions like "tomorrow morning" or "this evening".
+  const tz = timeZone || 'UTC';
+  const ref = DateTime.fromJSDate(refInstant).setZone(tz);
+
+  const applyTod = (dayStartInZone: DateTime, tod: string) => {
+    const def = TIME_OF_DAY_DEFAULTS[tod];
+    return dayStartInZone.set({ hour: def.h, minute: def.m, second: 0, millisecond: 0 }).toUTC().toJSDate();
+  };
+
   const todayMatch = text.match(/^(this|today)\s+(morning|afternoon|evening|night)$/);
   const tomorrowMatch = text.match(/^tomorrow\s+(morning|afternoon|evening|night)$/);
   const bareTod = text.match(/^(morning|afternoon|evening|night)$/);
 
-  const applyTod = (base: Date, tod: string) => {
-    const def = TIME_OF_DAY_DEFAULTS[tod];
-    const d = new Date(base);
-    d.setHours(def.h, def.m, 0, 0);
-    return d;
-  };
+  if (bareTod) return applyTod(ref.startOf('day'), bareTod[1]);
+  if (todayMatch) return applyTod(ref.startOf('day'), todayMatch[2]);
+  if (tomorrowMatch) return applyTod(ref.plus({ days: 1 }).startOf('day'), tomorrowMatch[2]);
 
-  if (bareTod) return applyTod(now, bareTod[1]);
-  if (todayMatch) return applyTod(now, todayMatch[2]);
-  if (tomorrowMatch) {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 1);
-    return applyTod(d, tomorrowMatch[1]);
-  }
-
-  // chrono mis-parses "day after tomorrow" as +1 day. Handle it (and an optional time-of-day) explicitly.
   const datMatch = text.match(/^(?:the\s+)?day\s+after\s+tomorrow(?:\s+(morning|afternoon|evening|night|at\s+.+))?$/);
   if (datMatch) {
-    const base = new Date(now);
-    base.setDate(base.getDate() + 2);
+    const baseDay = ref.plus({ days: 2 }).startOf('day');
     const tail = datMatch[1];
     if (!tail) {
-      base.setHours(9, 0, 0, 0);
-      return base;
+      return baseDay.set({ hour: 9, minute: 0, second: 0, millisecond: 0 }).toUTC().toJSDate();
     }
-    if (TIME_OF_DAY_DEFAULTS[tail]) return applyTod(base, tail);
-    // "at <time>" — let chrono resolve just the time part against our shifted base.
+    if (TIME_OF_DAY_DEFAULTS[tail]) return applyTod(baseDay, tail);
     const timePart = tail.replace(/^at\s+/, '');
-    const parsedTime = chrono.parseDate(timePart, base, { forwardDate: false });
-    return parsedTime ?? base;
+    const baseInstant = baseDay.toUTC().toJSDate();
+    const parsedTime = chrono.parseDate(timePart, chronoRef(baseInstant, tz), { forwardDate: false });
+    return parsedTime ?? baseInstant;
   }
 
-  const parsed = chrono.parseDate(expression, now, { forwardDate: true });
+  const parsed = chrono.parseDate(trimmed, chronoRef(refInstant, tz), { forwardDate: true });
   return parsed ?? null;
 }
 
@@ -62,34 +66,27 @@ export const TIME_OF_DAY_RANGES: Record<string, TimeOfDayRange> = {
   morning: { start: { h: 5, m: 0 }, end: { h: 11, m: 59 } },
   afternoon: { start: { h: 12, m: 0 }, end: { h: 16, m: 59 } },
   evening: { start: { h: 17, m: 0 }, end: { h: 20, m: 59 } },
-  night: { start: { h: 21, m: 0 }, end: { h: 28, m: 59 } } // wraps to 04:59 next day
+  night: { start: { h: 21, m: 0 }, end: { h: 28, m: 59 } }
 };
-
-export function dayWindow(base: Date): { start: Date; end: Date } {
-  const start = new Date(base);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
-}
 
 export function resolveDateFilter(
   filter: 'today' | 'tomorrow' | 'this_week' | 'all' | undefined,
-  now: Date = new Date()
+  refInstant: Date,
+  timeZone: string
 ): { start: Date; end: Date } | null {
   if (!filter || filter === 'all') return null;
-  if (filter === 'today') return dayWindow(now);
+  const ref = DateTime.fromJSDate(refInstant).setZone(timeZone || 'UTC');
+  if (filter === 'today') {
+    const start = ref.startOf('day');
+    return { start: start.toUTC().toJSDate(), end: start.plus({ days: 1 }).toUTC().toJSDate() };
+  }
   if (filter === 'tomorrow') {
-    const t = new Date(now);
-    t.setDate(t.getDate() + 1);
-    return dayWindow(t);
+    const start = ref.plus({ days: 1 }).startOf('day');
+    return { start: start.toUTC().toJSDate(), end: start.plus({ days: 1 }).toUTC().toJSDate() };
   }
   if (filter === 'this_week') {
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 7);
-    return { start, end };
+    const start = ref.startOf('day');
+    return { start: start.toUTC().toJSDate(), end: start.plus({ days: 7 }).toUTC().toJSDate() };
   }
   return null;
 }

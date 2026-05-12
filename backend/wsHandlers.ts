@@ -1,6 +1,7 @@
 import { groq, MODELS } from './groq';
 import { parseIntent } from './agent/parseIntent';
 import { executeAction } from './tasks/taskEngine';
+import { resolveUserTimeZone } from './userTime';
 import {
   appendMessage,
   getContext,
@@ -69,6 +70,8 @@ export async function handle(msg: WsRequest): Promise<unknown> {
       const transcript = ((msg.payload?.transcript as string) ?? '').trim();
       if (!transcript) throw new Error('Empty transcript');
 
+      const timeZone = resolveUserTimeZone(msg.payload?.timeZone as string | undefined);
+
       const ctx = await getContext(userId);
       ctx.lastUserTranscript = transcript;
       await saveContext(ctx, userId);
@@ -79,7 +82,7 @@ export async function handle(msg: WsRequest): Promise<unknown> {
       const now = new Date();
       let action;
       try {
-        action = await parseIntent(transcript, ctx, now.toISOString());
+        action = await parseIntent(transcript, ctx, now.toISOString(), timeZone);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'parseIntent failed';
         console.error('[agent] parseIntent failed:', errMsg);
@@ -98,7 +101,7 @@ export async function handle(msg: WsRequest): Promise<unknown> {
         };
       }
 
-      const result = await executeAction(action, now, userId);
+      const result = await executeAction(action, now, userId, timeZone);
       await appendMessage('assistant', result.responseText, userId);
       const allTasks = await listAllTasks(userId);
       return { ...result, tasks: allTasks };

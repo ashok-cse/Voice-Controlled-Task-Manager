@@ -1,4 +1,6 @@
 import { DEFAULT_USER_ID } from '../db';
+import { DateTime } from 'luxon';
+import { formatSpeechDateTime } from '../userTime';
 import type {
   AgentAction,
   AgentCommandResponse,
@@ -45,10 +47,10 @@ function normalizeRepeat(repeat: RepeatSpec | undefined): RepeatSpec | null {
 }
 
 function shiftDate(iso: string, steps: number, unit: 'day' | 'week'): string {
-  const d = new Date(iso);
-  const days = unit === 'week' ? steps * 7 : steps;
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
+  let dt = DateTime.fromISO(iso, { zone: 'utc' });
+  if (!dt.isValid) dt = DateTime.fromJSDate(new Date(iso), { zone: 'utc' });
+  const shifted = unit === 'week' ? dt.plus({ weeks: steps }) : dt.plus({ days: steps });
+  return shifted.toISO()!;
 }
 
 async function materializeRepeats(
@@ -103,14 +105,16 @@ function filterScope(
 function summarizeAgenda(
   tasks: Task[],
   filters: { date?: string; status?: string; timeOfDay?: string } | undefined,
-  fallbackTasks: Task[] = []
+  fallbackTasks: Task[],
+  now: Date,
+  timeZone: string
 ): string {
   const scope = filterScope(filters);
   if (!tasks.length) {
     const head = scope ? `You have no ${scope} tasks` : 'You have no tasks';
     // Surface the actual tasks the user does have, with their times.
     if (fallbackTasks.length && (filters?.timeOfDay || filters?.date)) {
-      const items = fallbackTasks.slice(0, 5).map(describeTaskForVoice);
+      const items = fallbackTasks.slice(0, 5).map((t) => describeTaskForVoice(t, now, timeZone));
       const count =
         fallbackTasks.length === 1
           ? 'one pending task'
@@ -123,7 +127,7 @@ function summarizeAgenda(
     }
     return `${head}.`;
   }
-  const items = tasks.map(describeTaskForVoice);
+  const items = tasks.map((t) => describeTaskForVoice(t, now, timeZone));
   const head =
     tasks.length === 1
       ? `You have one ${scope || ''} task`.replace(/\s+/g, ' ').trim()
@@ -134,7 +138,8 @@ function summarizeAgenda(
 export async function executeAction(
   rawAction: AgentAction,
   now: Date = new Date(),
-  userId: string = DEFAULT_USER_ID
+  userId: string = DEFAULT_USER_ID,
+  timeZone = 'UTC'
 ): Promise<AgentCommandResponse> {
   let action = rawAction;
   const ctx = await getContext(userId);
@@ -184,7 +189,7 @@ export async function executeAction(
     if (pending.type === 'UPDATE_TASK') {
       // Re-run update from the stored proposed action.
       const proposed = pending.proposedAction;
-      const result = await applyUpdate(proposed, ctx, now, true, userId);
+      const result = await applyUpdate(proposed, ctx, now, true, userId, timeZone);
       return result;
     }
   }
@@ -230,7 +235,7 @@ export async function executeAction(
     const duplicates: Task[] = [];
     for (const t of valid) {
       const title = t.title.trim();
-      const when = parseNaturalTime(t.timeExpression ?? null, now);
+      const when = parseNaturalTime(t.timeExpression ?? null, now, timeZone);
       const scheduledAt = when ? when.toISOString() : null;
 
       const existing = await findDuplicateTask(title, scheduledAt, userId);
@@ -280,23 +285,17 @@ export async function executeAction(
         repeat.unit === 'week' ? 'weeks' : 'days'
       } in a row.`;
     } else if (created.length && duplicates.length) {
-      speak = `${summarizeCreated(created)} I skipped ${joinList(
+      speak = `${summarizeCreated(created, timeZone)} I skipped ${joinList(
         duplicates.map((d) => `"${d.title}"`)
       )} since ${duplicates.length === 1 ? 'it already exists' : 'they already exist'}.`;
     } else if (!created.length && duplicates.length) {
       speak = `"${duplicates[0].title}" is already on your list${
         duplicates[0].scheduledAt
-          ? ` for ${new Date(duplicates[0].scheduledAt).toLocaleString('en-US', {
-              hour: 'numeric',
-              minute: '2-digit',
-              hour12: true,
-              month: 'short',
-              day: 'numeric'
-            })}`
+          ? ` for ${formatSpeechDateTime(duplicates[0].scheduledAt, timeZone)}`
           : ''
       }.`;
     } else {
-      speak = action.responseText?.trim() || summarizeCreated(created);
+      speak = action.responseText?.trim() || summarizeCreated(created, timeZone);
     }
 
     const allAffected = [...created, ...repeated, ...duplicates];
@@ -319,12 +318,12 @@ export async function executeAction(
       return finalize(ctx, action, [], [], 'How many days should I repeat it for?', undefined, userId);
     }
     const all = await listAllTasks(userId);
-    const { matches, ambiguous } = matchTasks(action.target, all, ctx, now);
+    const { matches, ambiguous } = matchTasks(action.target, all, ctx, now, timeZone);
     if (!matches.length) {
       return finalize(ctx, action, [], [], "I couldn't find that task to repeat.", undefined, userId);
     }
     if (ambiguous) {
-      const opts = matches.slice(0, 3).map(describeTaskForVoice);
+      const opts = matches.slice(0, 3).map((t) => describeTaskForVoice(t, now, timeZone));
       return finalize(
         ctx,
         action,
@@ -369,34 +368,34 @@ export async function executeAction(
   // ---- READ ---------------------------------------------------------------
   if (action.intent === 'READ_TASKS') {
     ctx.pendingDraft = null;
-    const tasks = await listTasksByFilter(action.filters, now, userId);
+    const tasks = await listTasksByFilter(action.filters, now, userId, timeZone);
     ctx.lastListedTaskIds = tasks.map((t) => t.id);
     // If the filter returned nothing but the user has pending tasks elsewhere,
     // surface them with times so the reply isn't a misleading "no pending tasks".
     let fallbackTasks: Task[] = [];
     if (!tasks.length && (action.filters?.timeOfDay || action.filters?.date)) {
-      fallbackTasks = await listTasksByFilter({ status: 'pending', date: 'all' }, now, userId);
+      fallbackTasks = await listTasksByFilter({ status: 'pending', date: 'all' }, now, userId, timeZone);
     }
-    const speak = summarizeAgenda(tasks, action.filters, fallbackTasks);
+    const speak = summarizeAgenda(tasks, action.filters, fallbackTasks, now, timeZone);
     return finalize(ctx, action, tasks, tasks.map((t) => t.id), speak, undefined, userId);
   }
 
   // ---- UPDATE -------------------------------------------------------------
   if (action.intent === 'UPDATE_TASK') {
     ctx.pendingDraft = null;
-    return applyUpdate(action, ctx, now, false, userId);
+    return applyUpdate(action, ctx, now, false, userId, timeZone);
   }
 
   // ---- COMPLETE -----------------------------------------------------------
   if (action.intent === 'COMPLETE_TASK') {
     ctx.pendingDraft = null;
     const all = await listAllTasks(userId);
-    const { matches, ambiguous } = matchTasks(action.target, all, ctx, now);
+    const { matches, ambiguous } = matchTasks(action.target, all, ctx, now, timeZone);
     if (!matches.length) {
       return finalize(ctx, action, [], [], "I couldn't find that task.", undefined, userId);
     }
     if (ambiguous) {
-      const opts = matches.slice(0, 3).map(describeTaskForVoice);
+      const opts = matches.slice(0, 3).map((t) => describeTaskForVoice(t, now, timeZone));
       return finalize(
         ctx,
         action,
@@ -432,7 +431,7 @@ export async function executeAction(
 
     if (isTrueBulk) {
       const filters = t!.filters ?? { status: 'pending' };
-      const tasks = await listTasksByFilter(filters, now, userId);
+      const tasks = await listTasksByFilter(filters, now, userId, timeZone);
       if (!tasks.length) {
         return finalize(
           ctx,
@@ -461,12 +460,12 @@ export async function executeAction(
     }
 
     const all = await listAllTasks(userId);
-    const { matches, ambiguous } = matchTasks(action.target, all, ctx, now);
+    const { matches, ambiguous } = matchTasks(action.target, all, ctx, now, timeZone);
     if (!matches.length) {
       return finalize(ctx, action, [], [], "I couldn't find that task to delete.", undefined, userId);
     }
     if (ambiguous) {
-      const opts = matches.slice(0, 3).map(describeTaskForVoice);
+      const opts = matches.slice(0, 3).map((t) => describeTaskForVoice(t, now, timeZone));
       ctx.lastListedTaskIds = matches.map((m) => m.id);
       return finalize(
         ctx,
@@ -479,7 +478,7 @@ export async function executeAction(
       );
     }
     const target = matches[0];
-    const message = `I found ${describeTaskForVoice(target)}. Should I delete it?`;
+    const message = `I found ${describeTaskForVoice(target, now, timeZone)}. Should I delete it?`;
     const pending: PendingConfirmation = {
       type: 'DELETE_TASK',
       taskIds: [target.id],
@@ -506,16 +505,17 @@ async function applyUpdate(
   ctx: ConversationContext,
   now: Date,
   isConfirmed: boolean,
-  userId: string
+  userId: string,
+  timeZone: string
 ): Promise<AgentCommandResponse> {
   const all = await listAllTasks(userId);
-  const { matches, ambiguous } = matchTasks(action.target, all, ctx, now);
+  const { matches, ambiguous } = matchTasks(action.target, all, ctx, now, timeZone);
 
   if (!matches.length) {
     return finalize(ctx, action, [], [], "I couldn't find a matching task.", undefined, userId);
   }
   if (ambiguous && !isConfirmed) {
-    const opts = matches.slice(0, 3).map(describeTaskForVoice);
+    const opts = matches.slice(0, 3).map((t) => describeTaskForVoice(t, now, timeZone));
     return finalize(
       ctx,
       action,
@@ -534,7 +534,7 @@ async function applyUpdate(
   const fallbackTimeExpr =
     action.tasks?.[0]?.timeExpression ?? action.target?.timeExpression ?? null;
   const timeExpr = u.timeExpression ?? fallbackTimeExpr ?? null;
-  const when = timeExpr ? parseNaturalTime(timeExpr, now) : null;
+  const when = timeExpr ? parseNaturalTime(timeExpr, now, timeZone) : null;
 
   if (timeExpr && !when) {
     return finalize(
@@ -576,15 +576,7 @@ async function applyUpdate(
     action.responseText?.trim() ||
     (updated
       ? `Done. Updated ${updated.title}${
-          updated.scheduledAt
-            ? ` to ${new Date(updated.scheduledAt).toLocaleString('en-US', {
-                hour: 'numeric',
-                minute: '2-digit',
-                hour12: true,
-                month: 'short',
-                day: 'numeric'
-              })}`
-            : ''
+          updated.scheduledAt ? ` to ${formatSpeechDateTime(updated.scheduledAt, timeZone)}` : ''
         }.`
       : "I couldn't update that task.");
 
@@ -599,17 +591,11 @@ async function applyUpdate(
   );
 }
 
-function summarizeCreated(tasks: Task[]): string {
+function summarizeCreated(tasks: Task[], timeZone: string): string {
   if (tasks.length === 1) {
     const t = tasks[0];
     return t.scheduledAt
-      ? `Done. I created "${t.title}" for ${new Date(t.scheduledAt).toLocaleString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true,
-          month: 'short',
-          day: 'numeric'
-        })}.`
+      ? `Done. I created "${t.title}" for ${formatSpeechDateTime(t.scheduledAt, timeZone)}.`
       : `Done. I created "${t.title}".`;
   }
   return `Done. I created ${tasks.length} tasks: ${joinList(

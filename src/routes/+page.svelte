@@ -128,7 +128,10 @@
           continue;
         }
 
-        const data = await wsRequest<AgentCommandResponse>('agent:command', { transcript });
+        const data = await wsRequest<AgentCommandResponse>('agent:command', {
+          transcript,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        });
 
         tasks = data.tasks;
         highlightIds = data.affectedTaskIds ?? [];

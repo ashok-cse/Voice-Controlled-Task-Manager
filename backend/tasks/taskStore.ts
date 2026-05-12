@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import { DEFAULT_USER_ID, query } from '../db';
 import type {
   ConversationContext,
@@ -51,7 +52,8 @@ export async function listAllTasks(userId: string = DEFAULT_USER_ID): Promise<Ta
 export async function listTasksByFilter(
   filters: TaskFilters | undefined,
   now: Date = new Date(),
-  userId: string = DEFAULT_USER_ID
+  userId: string = DEFAULT_USER_ID,
+  timeZone = 'UTC'
 ): Promise<Task[]> {
   const clauses: string[] = ['user_id = $1'];
   const params: unknown[] = [userId];
@@ -62,7 +64,7 @@ export async function listTasksByFilter(
     clauses.push(`status = $${params.length}`);
   }
 
-  const window = resolveDateFilter(filters?.date, now);
+  const window = resolveDateFilter(filters?.date, now, timeZone);
   if (window) {
     params.push(window.start.toISOString());
     clauses.push(`scheduled_at >= $${params.length}`);
@@ -83,8 +85,8 @@ export async function listTasksByFilter(
     if (range) {
       tasks = tasks.filter((t) => {
         if (!t.scheduledAt) return false;
-        const d = new Date(t.scheduledAt);
-        const minutes = d.getHours() * 60 + d.getMinutes();
+        const d = DateTime.fromISO(t.scheduledAt, { zone: 'utc' }).setZone(timeZone);
+        const minutes = d.hour * 60 + d.minute;
         const startMin = range.start.h * 60 + range.start.m;
         const endMin = range.end.h * 60 + range.end.m;
         if (endMin >= 24 * 60) {
